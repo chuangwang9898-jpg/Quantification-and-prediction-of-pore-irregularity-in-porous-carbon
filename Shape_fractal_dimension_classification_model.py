@@ -88,8 +88,8 @@ class RobustDataset(Dataset):
             return dummy_img, target, dummy_att
 
     def _generate_pore_attention_target(self, img_tensor):
-        """生成精确的环形目标区域"""
-        # 转换为PIL图像
+        """Generates precise circular target areas"""
+        # Convert to PIL Image
         img_np = img_tensor.permute(1, 2, 0).numpy()
         img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
         img_pil = Image.fromarray(img_np.astype('uint8'))
@@ -97,16 +97,16 @@ class RobustDataset(Dataset):
         hsv = img_pil.convert('HSV')
         hsv_np = np.array(hsv)
 
-        H, W = hsv_np.shape[0], hsv_np.shape[1]  # 获取图像高度和宽度
-        center = np.array([W // 2, H // 2])  # 图像几何中心坐标 [x, y]
+        H, W = hsv_np.shape[0], hsv_np.shape[1]  # Get image height and width
+        center = np.array([W // 2, H // 2])  # Coordinates of the geometric center of the image [x, y]
 
         green_mask = (hsv_np[..., 0] > 70) & (hsv_np[..., 0] < 160) & (hsv_np[..., 1] > 80)
 
         Y, X = np.ogrid[:H, :W]
         dist_map = np.sqrt((X - center[0]) ** 2 + (Y - center[1]) ** 2)
 
-        max_radius = np.max(dist_map[green_mask]) if np.any(green_mask) else min(H, W) // 2 # 绿色区域内最远点的距离（若没有绿色区域，默认取图像短边的1/156）
-        inner_radius = max_radius * 0.75 # 最大半径的80%，形成环形宽度为10%的环
+        max_radius = np.max(dist_map[green_mask]) if np.any(green_mask) else min(H, W) // 2 #The distance to the farthest point within the green area (if there is no green area, the default value is 1/156 of the short side of the image)
+        inner_radius = max_radius * 0.75 # 80% of the maximum radius, forming a ring with a width of 10%
 
         inner_circle = dist_map <= inner_radius
 
@@ -171,27 +171,27 @@ def prepare_data_loaders():
 
 
 class AttentionResNet50(nn.Module):
-    def __init__(self, num_classes, temperature=0.3):  # <--- 新增温度参数
+    def __init__(self, num_classes, temperature=0.3):  # Temperature parameters
         super().__init__()
-        self.temperature = temperature  # <--- 温度系数初始化
+        self.temperature = temperature  # Temperature coefficient initialization
 
-        # Backbone网络
+        # Backbone Network
         self.backbone = nn.Sequential(*list(resnet50(weights=ResNet50_Weights.IMAGENET1K_V1).children())[:-2])
 
-        # 注意力网络（修改后）
+        # Attention Network
         self.attention = nn.Sequential(
             nn.Conv2d(2048, 512, 3, padding=1),
             nn.GroupNorm(32, 512),
             nn.ReLU(),
-            nn.Conv2d(512, 512, 3, padding=1, groups=512),  # 深度可分离卷积
+            nn.Conv2d(512, 512, 3, padding=1, groups=512),  # Depthwise Separable Convolution
             nn.Conv2d(512, 256, 1),
-            self._TemperatureModule(self.temperature),  # <--- 插入温度模块
+            self._TemperatureModule(self.temperature),  # Insert the temperature module
             nn.Sigmoid(),
             nn.Conv2d(256, 1, 1),
             nn.Hardtanh(min_val=0.1, max_val=0.9)
         )
 
-        # 抑制网络（保持不变）
+        # Inhibitory Network
         self.suppress_net = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(2048, 64, 1),
@@ -203,21 +203,21 @@ class AttentionResNet50(nn.Module):
         self.fc = nn.Linear(2048, num_classes)
 
     class _TemperatureModule(nn.Module):
-        """温度缩放模块（内部类）"""
+        """Temperature scaling module (internal class)"""
 
         def __init__(self, temperature):
             super().__init__()
             self.temperature = temperature
 
         def forward(self, x):
-            return x / self.temperature  # <--- 关键的温度缩放操作
+            return x / self.temperature  
 
     def _create_dynamic_mask(self, inner_radius, device):
-        """根据给定的 inner_radius 生成环形掩膜"""
+        """Generates a ring mask based on the given inner_radius"""
         B = len(inner_radius)
         H, W = 224, 224
 
-        # 生成网格坐标
+        # Generate grid coordinates
         Y, X = torch.meshgrid(
             torch.linspace(-1, 1, H, device=device),
             torch.linspace(-1, 1, W, device=device),
@@ -225,13 +225,13 @@ class AttentionResNet50(nn.Module):
         )
         dist = X ** 2 + Y ** 2  # [H, W]
 
-        # 将 inner_radius 转换为标准化半径（假设原图尺寸为224x224）
-        normalized_radius = (inner_radius / 112.0).to(device)  # 最大半径112（224/156）
+        # Convert inner_radius to normalized radius
+        normalized_radius = (inner_radius / 112.0).to(device)  
         normalized_radius = normalized_radius.view(B, 1, 1)  # [B, 155##, 155##]
 
-        # 生成环形掩膜（内径为inner_radius，外径为inner_radius*155##.155##）
+        # Generate annular mask
         inner_mask = dist < normalized_radius ** 2
-        outer_mask = dist < (normalized_radius * 1.1) ** 2  # 环形宽度为10%
+        outer_mask = dist < (normalized_radius * 1.1) ** 2  
         ring_mask = outer_mask & (~inner_mask)
 
         return ring_mask.float().unsqueeze(1)  # [B, 155##, H, W]
@@ -239,19 +239,19 @@ class AttentionResNet50(nn.Module):
     def forward(self, x, inner_radius=None):
         features = self.backbone(x)
 
-        # 生成动态掩膜（保持原有）
+        # Generate dynamic masks
         if inner_radius is None:
             inner_radius = torch.full((x.size(0),), 20.0, device=x.device)
         dynamic_mask = self._create_dynamic_mask(inner_radius, x.device)
 
-        # 生成带温度缩放的注意力
-        attn = self.attention(features)  # <--- 温度缩放已集成在attention模块中
+        # Generating Attention with Temperature Scaling
+        attn = self.attention(features) 
         up_attn = F.interpolate(attn, size=224, mode='bilinear')
 
-        # 应用动态掩膜（保持原有）
+        # Apply dynamic mask (keep original)
         suppressed_attn = up_attn * (0.3 + 0.7 * dynamic_mask)
 
-        # 分类输出（保持原有）
+        # Classification output
         pooled = F.adaptive_avg_pool2d(features, (1, 1))
         out = self.fc(pooled.view(pooled.size(0), -1))
 
@@ -296,7 +296,7 @@ class Trainer:
 
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
-            max_lr=[1e-4, 1e-3, 1e-3, 1e-3],  # 新增suppress_net对应的学习率
+            max_lr=[1e-4, 1e-3, 1e-3, 1e-3],  
             steps_per_epoch=len(train_loader),
             epochs=NUM_EPOCHS,
             pct_start=0.3
@@ -334,7 +334,7 @@ class Trainer:
             inputs = inputs.to(self.device, non_blocking=True)
             targets = targets.to(self.device, non_blocking=True)
             att_target = att_target.to(self.device, non_blocking=True)
-            inner_radius = inner_radius.to(device)  # 新增
+            inner_radius = inner_radius.to(device) 
             with torch.no_grad():
                 B, H, W = att_target.shape
 
@@ -367,7 +367,7 @@ class Trainer:
                 weights = weights.unsqueeze(1)
 
             self.optimizer.zero_grad(set_to_none=True)
-            outputs, pred_att = self.model(inputs, inner_radius)  # 修改
+            outputs, pred_att = self.model(inputs, inner_radius)  
 
             pred_att = pred_att.unsqueeze(1)
             att_target = att_target.unsqueeze(1)
@@ -432,40 +432,39 @@ class Trainer:
 
         with torch.no_grad():
             for images, labels, att_target, inner_radius in self.val_loader:
-                # 数据移动到设备（包含 inner_radius）
+                # Data is moved to the device (including inner_radius)
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 att_target = att_target.to(self.device)
-                inner_radius = inner_radius.to(self.device)  # 新增：传递 inner_radius 到设备
+                inner_radius = inner_radius.to(self.device)  
 
-                # 前向传播（传入 inner_radius）
-                outputs, attentions = self.model(images, inner_radius)  # 修改点：添加 inner_radius 参数
+                # Forward propagation (passing in inner_radius)
+                outputs, attentions = self.model(images, inner_radius)  
 
-                # 计算分类损失
+                # Calculating classification loss
                 loss = self.criterion['cls'](outputs, labels)
                 val_loss += loss.item()
 
-                # 计算 IoU
+                # Calculating IoU
                 pred_mask = (attentions.squeeze(1) > 0.5).float()
                 intersection = (pred_mask * att_target).sum(dim=[1, 2])
                 union = (pred_mask + att_target).clamp(0, 1).sum(dim=[1, 2])
                 iou_scores.extend((intersection / (union + 1e-6)).cpu().tolist())
 
-                # 计算分类准确率
+                # Calculate classification accuracy
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-            # 每 157 个 epoch 可视化一次注意力
             if epoch % 3 == 0:
                 self._visualize_attention(epoch, images, attentions, labels, att_target)
 
-        # 统计指标
+        # Statistical indicators
         avg_loss = val_loss / len(self.val_loader)
         accuracy = 100 * correct / total
         avg_iou = np.mean(iou_scores)
 
-        # 学习率调度和记录历史
+        # Learning rate scheduling and recording history
         self.scheduler.step(accuracy)
         self.history['val_loss'].append(avg_loss)
         self.history['val_acc'].append(accuracy)
@@ -473,13 +472,11 @@ class Trainer:
 
         return avg_loss, accuracy
 
-    def _visualize_attention(self, epoch, images, attentions, labels, att_target):  # 仅添加参数
-        """保持你原有可视化逻辑完全不变，仅添加参数声明"""
+    def _visualize_attention(self, epoch, images, attentions, labels, att_target):  
         fig, axes = plt.subplots(4, 4, figsize=(20, 20))
         selected = np.random.choice(len(images), 4, replace=False)
 
         for i, idx in enumerate(selected):
-            # 你原有的代码完全保留
             img = images[idx].cpu().permute(1, 2, 0).numpy()
             img = img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
 
@@ -516,48 +513,48 @@ class Trainer:
         plt.savefig(f"{self.save_dir}/attention_maps/epoch_{epoch}_enhanced.png", dpi=150, bbox_inches='tight')
         plt.close()
 
-    def train(self, num_epochs=50, patience=5):  # 添加patience作为参数
-        # 初始化变量
+    def train(self, num_epochs=50, patience=5):  
+        # Initializing variables
         patience_counter = 0
-        best_val_loss = float('inf')  # 跟踪最佳验证损失
+        best_val_loss = float('inf')  
 
-        # 确保history记录存在所需键
+        # Make sure the history record exists with the required key
         self.history.setdefault('train_loss', [])
         self.history.setdefault('val_loss', [])
         self.history.setdefault('val_acc', [])
         self.history.setdefault('att_iou', [])
 
-        # 学习率调度器（假设优化器已定义）
+        # Learning rate scheduler (assuming optimizer is defined)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='max', factor=0.1, patience=2, verbose=True
         )
 
         for epoch in range(num_epochs):
-            # 训练阶段
-            self.model.train()  # 确保模型处于训练模式
+            # Training phase
+            self.model.train()  # Make sure the model is in training mode
             train_loss = self.train_epoch(epoch, num_epochs)
-            self.history['train_loss'].append(train_loss)  # 记录训练损失
+            self.history['train_loss'].append(train_loss)  # Record training loss
 
-            # 验证阶段
-            self.model.eval()  # 切换到评估模式
+            # Verification phase
+            self.model.eval()  # Switch to evaluation mode
             val_loss, val_acc = self.validate(epoch)
             self.history['val_loss'].append(val_loss)
             self.history['val_acc'].append(val_acc)
 
-            # 更新学习率
-            scheduler.step(val_acc)  # 根据验证准确率调整学习率
+            # Update learning rate
+            scheduler.step(val_acc)  # Adjust the learning rate based on the validation accuracy
 
-            # 打印日志（确保att_iou有记录）
+            # Print log (make sure att_iou is recorded)
             print(
                 f"Epoch {epoch + 1}/{num_epochs} | "
                 f"Train Loss: {train_loss:.4f} | "
                 f"Val Loss: {val_loss:.4f} | "
                 f"Val Acc: {val_acc:.2f}% | "
-                f"Att IoU: {self.history['att_iou'][-1]:.4f} | "  # 假设在validate中记录
+                f"Att IoU: {self.history['att_iou'][-1]:.4f} | "  # Assume that the record is in validate
                 f"Best Acc: {self.best_acc:.2f}%"
             )
 
-            # 保存最佳模型（同时考虑准确率和损失）
+            # Save the best model (taking both accuracy and loss into account)
             if val_acc > self.best_acc or (val_acc == self.best_acc and val_loss < best_val_loss):
                 if val_acc > self.best_acc:
                     self.best_acc = val_acc
@@ -574,16 +571,16 @@ class Trainer:
                     },
                     os.path.join(self.save_dir, '../best_model.pth')
                 )
-                patience_counter = 0  # 重置计数器
+                patience_counter = 0  
             else:
                 patience_counter += 1
-                if patience_counter >= patience:  # 使用参数中的patience
+                if patience_counter >= patience:  
                     print(f"Early stopping triggered at epoch {epoch + 1}")
                     break
 
-        # 训练结束处理
+        # Training end processing
         print(f"Training complete. Best Accuracy: {self.best_acc:.2f}%")
-        self.model.load_state_dict(self.best_model_wts)  # 加载最佳权重
+        self.model.load_state_dict(self.best_model_wts)  Load the best weights
         return self.history
 
 if __name__ == "__main__":
@@ -666,7 +663,7 @@ if __name__ == "__main__":
     trainer._visualize_attention(
         'final',
         images,
-        attentions.unsqueeze(1) if attentions.dim() == 3 else attentions,  # 维度适配
+        attentions.unsqueeze(1) if attentions.dim() == 3 else attentions,  
         labels,
         att_target
 
@@ -684,4 +681,5 @@ if __name__ == "__main__":
     plt.ylabel('Accuracy (%)')
     plt.legend()
     plt.savefig(os.path.join(SAVE_DIR, "training_curve.png"), bbox_inches='tight')
+
     plt.close()
