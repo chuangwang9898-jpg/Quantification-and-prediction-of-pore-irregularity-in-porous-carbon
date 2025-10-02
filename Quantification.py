@@ -9,7 +9,7 @@ from torchvision import transforms
 from PIL import Image
 from tqdm import tqdm
 
-# ========== 分类器部分 ==========
+# ========== Classifier part ==========
 class CPUImageClassifier:
     def __init__(self, model_class, checkpoint_path, class_names):
         torch.set_num_threads(4)
@@ -18,7 +18,7 @@ class CPUImageClassifier:
         self.device = torch.device('cpu')
         self.class_names = class_names
 
-        # 加载模型
+        # Loading the model
         self.model = model_class(num_classes=len(class_names)).to(self.device)
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         state_dict = checkpoint.get('state_dict', checkpoint)
@@ -27,7 +27,7 @@ class CPUImageClassifier:
         self.model.load_state_dict(state_dict)
         self.model.eval()
 
-        # 预处理
+        # Preprocessing
         self.transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
@@ -94,7 +94,7 @@ class CPUImageClassifier:
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         colors = plt.cm.Set3(np.linspace(0, 1, len(self.class_names)))
 
-        # 饼图
+        # Pie chart
         pie_data = df['prediction'].value_counts()
         wedges, texts, autotexts = axes[0, 0].pie(
             pie_data,
@@ -109,20 +109,20 @@ class CPUImageClassifier:
         axes[0, 0].add_artist(centre_circle)
         axes[0, 0].set_title('Class Distribution')
 
-        # 置信度直方图
+        # Confidence Histogram
         axes[0, 1].hist(df['confidence'], bins=20, alpha=0.8, color='orange', edgecolor='black')
         axes[0, 1].set_title('Confidence Distribution')
         axes[0, 1].set_xlabel('Confidence Score')
         axes[0, 1].set_ylabel('Frequency')
 
-        # 箱线图
+        # Boxplot
         box_data = [df[df['prediction'] == cls]['confidence'].values for cls in sorted(self.class_names)]
         bplot = axes[1, 0].boxplot(box_data, labels=sorted(self.class_names), patch_artist=True)
         for patch, color in zip(bplot['boxes'], colors):
             patch.set_facecolor(color)
         axes[1, 0].set_title('Confidence by Class')
 
-        # 柱状图
+        # Histogram
         bar_data = df['prediction'].value_counts().sort_index()
         axes[1, 1].bar(bar_data.index, bar_data.values, color=colors, edgecolor='black')
         axes[1, 1].set_title('Class Count Distribution')
@@ -132,7 +132,7 @@ class CPUImageClassifier:
                     dpi=300, bbox_inches='tight')
         plt.close()
 
-        # 单独保存环形饼图
+        # Save the doughnut pie chart separately
         self._save_class_distribution_pie(df, report_path)
 
     def _save_class_distribution_pie(self, df, report_path):
@@ -157,7 +157,7 @@ class CPUImageClassifier:
                     dpi=300, bbox_inches='tight')
         plt.close()
 
-# ========== 偏离系数部分 ==========
+# ========== Deviation coefficient part ==========
 def calculate_deviation_coefficient(image_path, weight_exponent=1.5):
     image = cv2.imread(image_path)
     pores_mask = np.any(image != [0, 0, 0], axis=-1).astype(np.uint8) * 255
@@ -186,18 +186,18 @@ def calculate_deviation_coefficient(image_path, weight_exponent=1.5):
     return np.mean(delta_distances ** weight_exponent)
 
 def calculate_irregularity_coefficient(class_label, deviation_coeff):
-    # 类别权重归一化 (0~6 → 0~155)
+    # Class weight normalization
     group_weights = {
         0: 0.1, 1: 0.2, 2: 0.35,
         3: 0.6, 4: 0.9, 5: 1.3
     }
     class_score = group_weights.get(class_label, 0.5)
 
-    # 偏离系数对数归一化 (5~70 → 0~155)
+    # Logarithmic normalization of deviation coefficient
     d = min(max(deviation_coeff, 0.0), 80.0)
     deviation_score = np.log1p(d) / np.log1p(80.0)
 
-    # 综合加权 (偏离 156/157, 类别 155/157)
+    # Comprehensive weighted
     irregularity = (2/3) * deviation_score + (1/3) * class_score
     return float(irregularity)
 
@@ -210,16 +210,16 @@ def process_folder_and_calculate_coefficients(input_folder):
                 coefficients[file_name] = coeff
     return coefficients
 
-# ========== 工具函数：新数据归一化 ==========
+# ========== Tool function: normalize new data ==========
 def scale_new_irregularities(new_vals, lo, hi, a=0.1, b=0.9, clip=False):
     """
-    把新数据映射到和旧数据一致的 [a,b] 区间
-    :param new_vals: list 或 numpy.array, 新的不规则度均值
-    :param lo: 旧数据的最小值
-    :param hi: 旧数据的最大值
-    :param a: 目标区间下限 (默认0.155)
-    :param b: 目标区间上限 (默认0.9)
-    :param clip: 是否截断到 [a,b]，防止超出
+    Map the new data to the same interval [a,b] as the old data.
+    :param new_vals: list or numpy.array, new irregularity mean
+    :param lo: minimum value of the old data
+    :param hi: maximum value of the old data
+    :param a: lower bound of the target interval (default 0.155)
+    :param b: upper bound of the target interval (default 0.9)
+    :param clip: whether to clip to [a,b] to prevent exceeding
     """
     new_vals = np.array(new_vals, dtype=float)
     norm = (new_vals - lo) / (hi - lo + 1e-12)
@@ -263,11 +263,11 @@ def plot_and_statistics(coefficients, input_folder):
 def plot_and_statistics_irregularity(irregularities, input_folder):
     import numpy as np, matplotlib.pyplot as plt, pandas as pd, os
 
-    # 原始值
+    # Original value
     keys = list(irregularities.keys())
     vals = np.array([irregularities[k] for k in keys], dtype=float)
 
-    # 统计
+    # statistics
     stats = {"mean": float(vals.mean()),
              "std": float(vals.std()),
              "min": float(vals.min()),
@@ -283,7 +283,7 @@ def plot_and_statistics_irregularity(irregularities, input_folder):
         for k, v in stats.items():
             f.write(f"{k}: {v:.4f}\n")
 
-    # 直方图
+    # Histogram
     plt.figure(figsize=(6, 4))
     plt.hist(vals, bins=20, edgecolor="black", alpha=0.7)
     plt.xlabel("Irregularity (raw)")
@@ -296,11 +296,11 @@ def plot_and_statistics_irregularity(irregularities, input_folder):
     return irregularities, stats
 
 
-# ========== 主程序 ==========
+# ========== Main program ==========
 if __name__ == "__main__":
-    from model_4 import AttentionResNet50  # 替换为你的模型
+    from Shape_fractal_dimension_classification_model import AttentionResNet50  
 
-    # 保存所有文件夹的不规则度均值
+    # Save the mean irregularity of all folders
     folder_irregularity_means = []
 
     for folder_idx in range(1, 155):
@@ -339,7 +339,7 @@ if __name__ == "__main__":
 
         print("\n✅ 分类、偏离系数和不规则度系数统计完成！")
 
-        # 保存该文件夹的不规则度均值（原始的）
+        # Save the mean irregularity value of the folder (original)
         if irregularities:
             mean_irr = np.mean(list(irregularities.values()))
             folder_irregularity_means.append({
@@ -347,7 +347,7 @@ if __name__ == "__main__":
                 "不规则度均值": mean_irr
             })
 
-        # ⚡ 所有文件夹均值统一做 min-max 归一化
+        # ⚡ All folder means are uniformly normalized to min-max
         if folder_irregularity_means:
             df_summary = pd.DataFrame(folder_irregularity_means)
 
@@ -369,4 +369,5 @@ if __name__ == "__main__":
             # ⚡ 示例：对新数据做归一化
             new_data = [0.27, 0.45, 0.52, 0.60]  # 你的4条新数据
             new_scaled = scale_new_irregularities(new_data, lo, hi, a, b, clip=True)
+
             print("\n✨ 新数据归一化结果：", new_scaled)
